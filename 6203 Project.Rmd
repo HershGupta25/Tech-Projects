@@ -1,0 +1,405 @@
+---
+title: "6203 Project"
+author: "Hersh Gupta"
+date: '2022-07-03'
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### The Family Dog EV: Analyzing California’s EV Adoption Rates
+
+Project Overview
+
+##### Team 62 Members:
+
+Devayani Bhusari
+Hersh Gupta
+Paula Lee
+Matthew McMahon
+Eric Wissner
+
+#### Framing the Problem
+
+This project was inspired by a team member’s recent decision not to buy an electric vehicle (EV) due to concerns about the maturity of the EV charging station infrastructure. The team quickly supported pursuing a project focused on a topic related to electric vehicles. However, settling on a more specific problem statement was a more extensive process that needed to balance philosophical considerations and data availability.
+
+Does a robust network of EV charging stations lead to EV adoption? Or vice versa? It is a “classic chicken-and-egg problem” (Herculano). Beyond the question of causality, similarly, the team debated whether it should direct its attention to EV charging stations or the electric vehicles themselves.
+
+California, the one-state leading the EV adoption, represented a natural place to start. However, in our initial discussions, the team considered including other states, noting that California does not always express the sentiments of all other U.S. states.
+
+Ultimately, the team opted to explore the factors associated with EV adoption as measured by vehicle registrations. Although data for several of the proposed predictor variables were available for all U.S. states, the critical data we wanted to include was only available for California. This led us to finalize the scope of its primary research objective: to determine if any primary demographic significantly influenced EV adoption in California.
+
+#### General Approach
+
+With our problem statement, to determine primary demographic factors that influence EV adoption in California, the team began planning its analytical approach. From 2010 through 2020, we collected data for each county in California. The response variable was the EV population with active registrations and considered "on-the-road." The predictor variables included the number of EV charging stations and economic, demographic, housing, and social information listed in the key variables below.
+
+Once we cleaned and filtered our datasets by county level for granularity, we combined the datasets to create a singular data frame. We then split the data into two subsets: a training data set to build the model and a validation data set to assess model performance differences.
+
+The model was initially fitted using ordinary least squares (OLS) and then improved through variable selection techniques. The initial reduction was accomplished through Stepwise Regression. We then used Cook's Distance to identify influential points and removed outliers. Next, any instances of multicollinearity were explored and identified using Variance Inflation Factors (VIF) analysis to guide variable selection. Finally, we used regularization models such as LASSO, Ridge, and Elastic Net to optimize our regression model and compare predictive performance.
+
+#### Initial Hypotheses
+
+Before conducting the formal analysis, the team had the following expectations:
+
+More affluent counties will have a higher count of EVs on the road (e.g., Los Angeles County will have more than Humboldt County in CA), primarily since the purchase price is less of a concern.
+Counties where households have access to more cars, will have a higher number of EVs on the road.
+The total population would also have a positive impact on the percentage of total registered electric vehicles, highlighting a rural vs. urban divide in EV adoption.
+Charging station count would also significantly impact the EV population and EV share due to the more robust infrastructure conducive to maintaining EV use.
+Importing and Installing Libraries
+To start, we are installing and loading the packages required for this project. Each library serves the purpose of bringing the data together seamlessly. Below is a summary of why we used each library:
+
+Readxl: This library provides easy extraction from our cleaned exported excel files.
+Tidyverse: This library was heavily used for data manipulation using dplyr.
+Glmnet: This library was used to perform Elastic Net, LASSO, and Ridge Regression for regularization.
+Car: This library, Companion to Applied Regression, is used for model predictions.
+Ggplot2: This library was used for creating our visualizations.
+MASS: This library is used for our visualization of the Box-Cox plot.
+```{r}
+library(readxl)
+library(tidyverse)
+library(MASS)
+library(glmnet)
+library(car)
+library(ggplot2)
+```
+
+#### Loading and Displaying Data
+
+There are seven datasets that we used and combined for this project. As you can see below, we manipulated the data to ensure consistency across all the datasets. 
+```{r message=FALSE, warning=FALSE}
+educ_data <- read_excel("Bach or Higher.xlsx") %>% 
+                  dplyr::select(-County) %>%
+                  rename("Bach_or_Higher" = `Pct of 25 or older with Bach Higher`)
+econ_data <- read_csv("economicdata.csv") %>% 
+                  rename("Year" = year) %>% 
+                  mutate(working_pct = worker_over_16_commute/working_pop) %>%
+                  dplyr::select(-c(county,population_over_16,...1,worker_over_16_commute,working_pop)) %>%
+                  rename("Mean_travel_time" = mean_travel_time_to_work)
+ev_data <- read_excel("EV Vehicle Population.xlsx",sheet=5) %>% 
+                  filter(`Data Year`< 2021) %>%
+                  dplyr::select(c(County,`Electric Vehicles`,`Non-Electric Vehicles`,`EV Share`,`Data Year`)) %>% 
+                  rename ("Year" = `Data Year`,"EV" = `Electric Vehicles`,"Non-EV" = `Non-Electric Vehicles`,"county_std" = County) %>% 
+                  mutate("county_std" = str_c(county_std," County"))
+house_data <- read_excel("Households with 3 or more vehicles.xlsx") %>% 
+                  mutate(multi_veh_pct = `Housing Units with 3 or More Vehicles Available`/`Occupied Housing Units`) %>%
+                  dplyr::select(-c(County,`Occupied Housing Units`,`Housing Units with 3 or More Vehicles Available`))
+social_data <- read_excel("rural_urban_cleaned.xlsx") %>% 
+                  filter(State=="CA") %>% 
+                  dplyr::select(c(County_Name,Is_Metro)) %>% 
+                  rename("county_std" = County_Name)
+demo_data <- read_csv("demodata.csv") %>% 
+                  dplyr::select(-c(county,...1)) %>% 
+                  rename("Year" = year)
+station_data <- read_csv("station_counts.csv") %>% 
+                  dplyr::select(c(zipcounty,variable,value)) %>% 
+                  rename('county_std' = zipcounty,'Year' = variable,'Station_count' = value)
+median_age <- read_excel("Median Age by County 2010-2021.xlsx") %>% 
+                  rename("county_std" =County,"Year" = `Data Year`) %>% 
+                  filter(Year<2021) %>% 
+                  mutate("county_std" = str_c(county_std," County"))
+```
+### Data Overview
+#### Data Cleaning Process
+
+Data processing and cleansing have been a significant portion of our team's efforts. The datasets available are from the U.S. Census Bureau's American Community Survey, and we separated them by topic and year.
+
+The Economic Characteristics files contained most of the team's variables (e.g., number of workers who commute, income, travel time to work).
+The Housing Characteristics files provided the number of households with three or more cars available.
+The Demographics Characteristics files give the total population count and the median age.
+The Social Characteristics files allowed the team to capture educational attainment by including the percentage of adults that had earned a bachelor's degree or higher.
+We created a script to loop through the annual files for each topic and create a single table with the various variables sorted by county and year. The EV charging station dataset provided detailed information about each active public charging station, including the zip code and the date it became operational. Additional logic was used to wrangle this data into a compatible format across all data sets. The script looped through the years, counting the number of active stations based on the "date open" field and mapping the zip codes to their respective counties based on data from the Zip Code Database website. The EV Vehicle Population dataset is from the California Energy Commission and had counts for every car type, from Diesel to PHEV, for each county in California from 2010-2021 (inclusive). Initially, we aggregated all the counts into electric and non-electric vehicles for each county and every corresponding year into a separate tab. Within that tab, an additional column called "EV Share" was created to quantify the percentage of the EV market share in each county every year.
+
+Although most of the variables were directly available from the datasets, the team also created variables that it believed might be meaningful to the analysis. The variable working_pct was made by dividing the # of workers over 16 who commute by the total # of workers, and multi_veh_pct was created by dividing the "Housing Units with 3 or More Vehicles Available" by the Total Occupied Housing Units.
+
+Once all the datasets were collected, they needed to be joined together to be efficiently manipulated in our models. To achieve this, there needed to be a consistent set of columns to join on. With us focusing on data for each California county every year, county_std and Year (variables), naturally, became the standard columns to join all the data on. As a result, in most of the datasets, we had to either create the county_std column or rename it, while we just renamed the corresponding Year columns. Additionally, we shortened some column names like "EV" for "Electric Vehicles" and "Multi Car Homes" for "Housing Units for 3 or More Vehicles Available" for brevity and cleanliness. Due to a large number of columns, some like population_over_16, "Occupied Housing Units," and working_pop were removed for redundancies that would very likely lead to multicollinearity.
+
+#### Key Variables
+
+Below are the factors we thought would be the most influential for EV adoption. The created variables will be explained further in the feature engineering section.
+
+Base - Number of EV Chargers
+Base - Household Median Income
+Base - Per Capita Income
+Base - Population Estimates
+Base - Number of People 25 Years and Older with Bachelor’s Degree or Higher
+Base - Year
+Base - Mean Travel Time to Work in Minutes
+Base - Total Non-EV Car Population
+Base - Number of Households with 3+ Cars
+Created - % of Population in Workforce (Number of workers 16 years and older / Population Estimate)
+Created - % of Car Registrations That Are Electric Vehicles (EV / total vehicles)
+Created - % of Households with 3+ Cars (Households with 3+ cars / Total households)
+```{r}
+df_list <- list(educ_data,econ_data,ev_data,house_data,demo_data,station_data,median_age)
+
+full_ev_data <- df_list %>% reduce(full_join,by=c('county_std','Year'))
+
+full_ev_data <- full_ev_data %>% drop_na()
+
+colnames(full_ev_data)
+write_csv(full_ev_data,"full_ev_data.csv")
+```
+#### Interesting Insights
+
+Upon exploring the aggregated data in depth, quite a few variables instantly popped out as following on the same trend. For example, the income per capita was consistently higher in counties where the percentage of the population that had attained a Bachelor’s degree or higher was higher.
+
+On the station count front, it became apparent that regardless of the county and wether or not it was urban or rural, the EV station count showed a non-linear positive growth, especially from 2016 onward. There were particularly large jumps in the numbers exhibited between 2019 and 2020 across all counties, but especially in the largely populated counties such as Los Angeles county and Santa Clara county. This is likely due to the implementation of policies in California that are geared towards making California a fully electric state within the next 20 to 30 years. The state has been steadily investing in broad programs that aim to increase the electric vehicle charging infrastructure to promote the adoption of more privately owned EVs.
+
+Another interesting find is that the population as a whole appears to be getting older with an increasing median age per county per year. This could have an interesting impact on the predictive modeling as research showed that the older generation is more resistant towards EV adoption in comparison to the younger generation. However, a counter to this that should be kept in mind is that older populations also have a longer working history and may be able to better afford investing in the current EV market as compared to those who are younger and have less purchasing power.
+
+#### Feature Engineering
+
+The team used multiple concepts of feature engineering when cleaning and preparing the data for use in the analysis, as well as within the analysis to fine tune the models.
+
+Initially, feature extraction was conducted by using R scripts to loop through the large raw datasets and crate smaller datasets with only the factors that had been chosen as ones that would be most relevant to the problem statement. These multiple smaller data sets were then combined into one file that the algorithm could process.
+
+Although most of the variables were directly available from the datasets, the team used the concepts of feature creation to create variables that it believed might be meaningful to the analysis.
+
+The variable working_pct was made by dividing the number of workers over 16 who commute by the total number of workers. This would help to show a clearer picture of what percentage of the county’s working population had any use for a mode of transportation.
+
+The variable multi_veh_pct was created by dividing the "Housing Units with 3 or More Vehicles Available" by the Total Occupied Housing Units. This would give a clearer indication of the percent of the housing units that had access to more than one car, as one of the hypotheses included that availability to multiple cars would better facilitate the adoption of one of those vehicles being electric.
+
+The variable “EV share” was created by dividing the number of electric vehicles on the road (“EV population”) by the total number of vehicles registered. This variable was created to facilitate the comparison of the models behavior in determining significant factors when looking at the percentage of electric vehicles compared to the total vehicle population versus the raw total number of electric vehicles per county.
+
+Finally, various tools were used to facilitate feature selection so that the analysis could become more meaningful. Variable Inflation Factor (VIF) was used to determine which of the selected feature from the initial model exhibited multicollinearity. Next, stepwise regression was used to determine which of the features would be irrelevant. Both techniques in tandem allowed for the removal of inconsequential variables so that the model could be more accurate in the final prediction.
+
+#### Dataset Source
+
+We focused on datasets that were publicly maintained and available. Below are the datasets we used:
+
+The American Community Survey by Census Bureau (2010-2020, 5-Year Estimates Data Profiles)
+
+Selected Demographic and Housing Characteristics
+Selected Economic Characteristics
+Selected Housing Characteristics
+Selected Social Characteristics
+Link: census.gov
+National Renewable Energy Laboratory (NREL) (2010-2020)
+
+California EV Station Counts by zip code
+Link: developer.nrel.gov
+United States Zip Codes
+
+Zip Codes to convert to County Names
+Link: unitedstateszipcodes.org
+California Energy Commission
+
+Capture EV Population
+Link: energy.ca.gov
+Modeling Overview
+Models Used
+Before creating our models, we separated our data into training, validation, and test data sets to find the model with the best fit and to avoid overfitting.
+```{r}
+set.seed(1)
+#sample(range(nrow(full_ev_data),.6*nrow(full_ev_data)))
+train_ind <- sample(seq(1,nrow(full_ev_data)),.6*nrow(full_ev_data))
+train_data <- full_ev_data[train_ind,]
+val_test_data <- full_ev_data[-train_ind,]
+val_ind <- sample(seq(1,nrow(val_test_data)),.5*nrow(val_test_data))
+val_data <- val_test_data[val_ind,] 
+test_data <- val_test_data[-val_ind,] 
+```
+
+We initially created two models to determine which response variable we would use in our analysis. The first model, full_model, has EV count as the total number of electric vehicles as the response variable. The second model, share_model, has EV share as the percentage of total cars on the road as the response variable.
+
+#### Model Selection
+
+The EV population model was selected for further analysis due to having a significantly higher R-Squared value. In doing so, we could look at making adjustments to the parameters and eliminating any unnecessary variables to avoid any overfitting issues.
+
+#### Multicollinearity
+```{r}
+full_model <- lm(`EV` ~. -county_std -`EV Share`,train_data)
+summary(full_model)
+vif(full_model)
+
+share_model <- lm(`EV Share`~.-EV - county_std,train_data)
+summary(share_model)
+vif(share_model)
+#summary(share_model)
+#vif(share_model)
+```
+
+By using the Variance Inflation Factor, the multicollinearity present within the model becomes very apparent. Median household income with per captia income and Non-EV counts with total population are the two pairs of highly correlated variables. To ensure higher accuracy in the predictions and a lack of bias within the training data, 2 of these variables must be removed. In the coming steps, stepwise regression is used to eliminate this concern.
+
+#### Cook's Distance
+```{r}
+cook <- cooks.distance(full_model)
+plot(cook)
+no_out_train <- train_data[!(cook>1),]
+no_out_model <- lm(EV~.-county_std-`EV Share`,no_out_train)
+stepmodel <- step(no_out_model,direction = "both",trace=FALSE)
+summary(stepmodel)
+#plot(stepmodel$fitted.values, stdres(stepmodel))
+
+#boxcox(stepmodel)
+#hist(stdres(stepmodel))
+#vif(stepmodel)
+```
+After choosing the EV rather than EV share model, it was critical that we removed any outliers that could cause skewed predictions. As a result, we used Cook's distance to determine which data points were not within a Cook's distance of 1. The two counties that had a Cook's distance larger than 1 were Los Angeles County and Santa Clara County in 2020.
+
+With those outliers removed, we leveraged stepwise regression for our variable selection method and significance testing to reduce the insignificant variables in our EV count model. As stated previously, we had two pairs of highly correlated variables. The stepwise regression removed median household income but both of Non-EV counts and total population were still in the final step model (still are highly correlated as seen in the VIF of the step model above). As a result, we made the educated decision to remove Non-EV counts as it is likely more correlated with our response variable.
+
+```{r}
+reduced_step_model <- lm(EV+1~Bach_or_Higher+per_capita_inc+working_pct+multi_veh_pct+total_pop+Station_count,no_out_train)
+summary(reduced_step_model)
+resids = rstandard(reduced_step_model)
+hist(rstandard(reduced_step_model))
+qqPlot(reduced_step_model)
+plot(reduced_step_model$fitted.values,resids)
+boxcox(reduced_step_model)
+```
+With our reduced model, we ran some assumption tests that included normality and constant variance. From the plots above it can be inferred that the the reduced model's standardized residuals do not follow a normal distribution and that the constant variance assumption does not hold. As a result, we needed to transform our predictors or response variable. With the BoxCox returning a lambda with a closest half-integer of 0, we must complete a log transformation of the response variable.
+
+Using the Log-Linear model, we transformed the response variable, EV count. One reason for this log transformation is to remove the systematic change in spread. As shown in the graph below, before we log-transformed our model, the fitted values vs. residuals show heteroscedasticity.
+
+#### Log Transformation
+```{r}
+trans_model <- lm(log(EV+1)~Bach_or_Higher+per_capita_inc+working_pct+multi_veh_pct+total_pop+Station_count,no_out_train)
+summary(trans_model)
+qqPlot(trans_model)
+plot(trans_model$fitted.values,rstandard(trans_model))
+plot(trans_model$fitted.values,no_out_train$per_capita_inc)
+```
+#### Hyper-Parameter Optimization
+
+For this section, we decided to use a lasso, ridge regression, and elastic net approach on our parameters. We are hoping that with this approach, we can identify predictor variables that should be removed through the lasso method and determine the effects of ridge regression on variables that have been identified as possible multicollinearity issues.
+```{r}
+y  = no_out_train$`EV`
+x = data.matrix(no_out_train[,c(-1,-3,-8,-10)])
+
+lasso_model <- cv.glmnet(x, y, alpha = 1) # lasso regression
+lasso_lambda <- lasso_model$lambda.min
+blasso_model <- glmnet(x, y, alpha = 1, lambda = lasso_lambda)
+coef(blasso_model)
+
+lasso_model_std <- cv.glmnet(x, y, alpha = 1,standardize=TRUE) # lasso regression
+lasso_lambda_std <- lasso_model_std$lambda.min
+blasso_model_std <- glmnet(x, y, alpha = 1, lambda = lasso_lambda_std)
+coef(blasso_model_std)
+
+el_model <- cv.glmnet(x, y, alpha = 0.5) # elastic net regression
+el_lambda <- el_model$lambda.min
+bel_model <- glmnet(x, y, alpha = 0.5, lambda = el_lambda)
+coef(bel_model)
+
+ridge_model <- cv.glmnet(x, y, alpha = 0) # ridge regression
+ridge_lambda <- ridge_model$lambda.min
+bridge_model <- glmnet(x, y, alpha = 0, lambda = ridge_lambda)
+coef(bridge_model)
+```
+
+#### Model Performance
+
+The coefficients above correspond to Lasso, Elastic Net, and Ridge regression from top to bottom. Interestingly, the Elastic Net and Lasso regression models have very similar coefficients while the ridge regression model exhibits a bit of deviation from the other two. Specifically, the ridge regression model changes the sign of the coefficient for two of the predictor variables, changing the total_pop coefficient from negative to positive, and the mean travel time coefficient again from negative to positive. The fact that Lasso did not remove any variables, we can infer that there is a lack of multicollinearity in its model.
+
+#### Models Compared and Chosen
+```{r}
+fullpred <- predict(no_out_model,val_data)
+full_rmse = sqrt(mean((fullpred-val_data$EV)^2))
+
+steppred <- predict(stepmodel,val_data)
+step_rmse = sqrt(mean((steppred-val_data$EV)^2))
+
+reducsteppred <- predict(reduced_step_model,val_data)
+reduc_step_rmse = sqrt(mean((reducsteppred-val_data$EV)^2))
+
+transpred <- expm1(predict(trans_model,val_data))
+trans_rmse = sqrt(mean((transpred-val_data$EV)^2))
+
+lassopred <- predict(blasso_model,s=lasso_lambda,newx=data.matrix(val_data[,c(-1,-3,-8,-10)]))
+lasso_rmse <- sqrt(mean((lassopred-val_data$EV)^2))
+
+lassopred_std <- predict(blasso_model_std,s=lasso_lambda_std,newx=data.matrix(val_data[,c(-1,-3,-8,-10)]))
+lasso_rmse_std <- sqrt(mean((lassopred_std-val_data$EV)^2))
+
+elpred <- predict(bel_model,s=el_lambda,newx=data.matrix(val_data[,c(-1,-3,-8,-10)]))
+el_rmse <- sqrt(mean((elpred-val_data$EV)^2))
+
+ridgepred <- predict(bridge_model,s=ridge_lambda,newx=data.matrix(val_data[,c(-1,-3,-8,-10)]))
+ridge_rmse <- sqrt(mean((ridgepred-val_data$EV)^2))
+
+RMSE<-c(step_rmse, reduc_step_rmse, trans_rmse, lasso_rmse, el_rmse, ridge_rmse)
+Model<-c('Stepwise', 'Reduced', 'Transformed', 'LASSO', 'Elastic Net', 'Ridge')
+dat<-data.frame(Model=Model, RMSE=RMSE)
+library(ggplot2)
+ggplot(dat,aes(x=Model,y=RMSE))+geom_bar(stat="identity")+scale_x_discrete(limits=dat$Model)+geom_text(aes(label = round(RMSE,2)), vjust = 1.5, colour = "white")+ggtitle("RMSE by Model")
+```
+
+Let's calculate the R-squared for the Lasso, Elastic Net, and Ridge regression models to give a frame of reference to the other models.
+
+```{r}
+y = val_data$EV
+sst <- sum((y - mean(y))^2)
+
+sse_lasso <- sum((lassopred - y)^2)
+sse_el <- sum((elpred - y)^2)
+sse_ridge <- sum((ridgepred - y)^2)
+
+rsq_lasso <- 1- sse_lasso/sst
+rsq_el <- 1- sse_el/sst
+rsq_ridge <- 1- sse_ridge/sst
+
+sprintf("The R-squared of the Lasso model is %f.",rsq_lasso)
+sprintf("The R-squared of the Elastic Net model is %f.",rsq_el)
+sprintf("The R-squared of the Ridge model is %f.",rsq_ridge)
+```
+
+```{r}
+sprintf("The step model's RMSE is %f.",step_rmse)
+sprintf("The reduced step model's RMSE is %f.",reduc_step_rmse)
+sprintf("The transformed reduced step model's RMSE is %f.",trans_rmse)
+sprintf("The Lasso model's RMSE is %f.",lasso_rmse)
+sprintf("The Lasso model's RMSE is %f.",lasso_rmse_std)
+sprintf("The Elastic Net model's RMSE is %f.",el_rmse)
+sprintf("The Ridge model's RMSE is %f.",ridge_rmse)
+```
+Our results from the accuracy test showed three clear frontrunners, the stepwise regression, lasso, and elastic net models. There was less than 1% difference in RMSE between the three. The stepwise regression model was chosen in this case due to the fact that the model removes three predictor variables. Having the same accuracy as the elastic net and lasso models while also achieving greater simplicity through fewer variables made the stepwise regression model the clear choice.
+
+#### Evaluation of Results
+```{r}
+
+steppred <- predict(stepmodel,test_data)
+test_step_rmse = sqrt(mean((steppred-test_data$EV)^2))
+test_step_rmse
+
+```
+
+
+With the original step model as our final model of choice, it had a RMSE of 3795 in the test data. This is expected as the test dataset should have a worse RMSE than the validation data. With many counties throughout the decade at less than 5 electric cars, the model is likely to largely be inaccurate for those counties since those corresponding predictors can have a wide range of values and thus won't be able to give an accurate prediction on the number of EV cars in that county.
+
+#### Unexpected Challenges
+
+It is difficult to identify unanticipated challenges across all five team members. Each of them brought different experiences and perspectives to the team. As mentioned earlier, that diversity of thought led to early extensive discussions about how to focus the project. As opposed to working on an assigned project, the art of determining and defining the problem statement was not a trivial task. There are many different topics regarding electric vehicles, making it difficult to reach a consensus. We had to take a step back and choose a simple yet specific question, which was another challenge in itself as we tried to avoid answering every question regarding EVs.
+
+The data itself presented some challenges. Any data we found regarding electric vehicles was proprietary or needed to be purchased, limiting our data selection. As a result, we relied heavily on information given by the government to get information. Vehicle registrations, EV or otherwise, are maintained at a state level. While each state has some online presence, the extent to which each makes its registration data available varies considerably. Given the time constraints for the project, the team needed to focus its efforts on California, where all the necessary data was available.
+
+Additionally, even for data that was provided on an annual basis, changes in the survey methodology or classifications added wrinkles to the data preparation process. For instance, the datasets that stored the number of households with three or more cars changed the code the team used to join the data across the years. In 2010, the field containing the number of housing units per county (number of households) was coded "DP04_0056E". By 2016, that same data was coded "DP04_0057E," with the previous code referring to households that had moved in 1979 or earlier. Thus, despite leveraging code to assist with the data cleansing process, the data also needed to be manually validated.
+
+Additionally, when running the models, there was a slight hiccup in the EV Population dataset (ev_data) that pertained to the counts associated with the wrong counties in the original excel file. The counts were not incorrect, just misassociated, which caused the models to result in uncorrelated relationships. After the dataset was reordered to match up the correct counties with the right EV and non-EV counts, we were able to get better results.
+
+#### Unfinished Business
+
+As mentioned before, when we decided to focus our project on electric vehicles, we found several topics we could have potentially worked on when researching. If there were more public resources available, I'm sure we would have chosen one of these topics as we found them quite interesting. A description of each topic is provided below.
+
+One topic of discussion that came up early on was the adoption of electric vehicles in rural areas compared to urban areas. Rural areas cover 56% of U.S. land and are home to more than 57 million Americans. If there were more charging infrastructure, electric utility vehicles (e.g., F-150 Lightning), and the removal of dealership laws, there could be a significant push for rural areas to go electric (Tolbert).
+
+California has a Clean Vehicle Rebate Project (CVRP) that promotes clean vehicle adoption by offering rebates for purchasing various electric vehicles. This rebate project has helped drive EV adoption. Similarly, other states have implemented financial incentives, such as tax credits, to push for alternative fuel vehicles. If we had more time and data, we could have analyzed state-by-state if these incentives increased EV adoption.
+
+Initially, we wanted to do this project across multiple states, not just California. However, with the data variation by state, it was not possible. If the data were consistent across states, we would like to see if our findings in California would have been valid in other states such as Florida or Texas.
+
+#### Conclusion and Key Takeaways
+
+The main result that we found was that the station count had a major impact on the EV population in the most accurate models. This is probably due to two main things. First, most of the variables we used were demographic factors, and demographic factors aren't going to change significantly over a 10-year period. The per-capita income might go up 5-10% for a county in that time, and the total population might go up the same amount. Secondly, the station count, especially for the bigger counties, showed largely non-linear growth. Over a year, you might see the station count go up by 20-30%, at other times it might go up 100% or more. It's largely due to the use of non-static data such as station count with static data such as demographic factors, we saw much more weight being given to station count in all our optimization models, and in fact the 3 most accurate models increased the magnitude of the station factor.
+
+The effect of this is that it is difficult to project future EV counts for larger counties in mid to late-stage adoption. One thing we found with the outliers is that they all represented points with very high station counts, and very high increases from the previous year. For Los Angeles, the number of stations increased about 150% from 2019 to 2020, and for Santa Clara, the other outlier, that increase was over 200%. This also brings into question the model's ability to take into account an influx of infrastructure spending for theses stations and the effects of that, as a 100% increase in stations for a county could render it an outlier.
+
+#### Sources Cited
+
+Herculano, Gabriela. “Chicken-and-Egg Problem: EV Adoption and Buildout of Charging Networks.” Nasdaq, 18 April 2022, https://www.nasdaq.com/articles/chicken-and-egg-problem%3A-ev-adoption-and-buildout-of-charging-networks. Accessed 4 July 2022.
+“National EV Survey.” Consumer Reports Advocacy, https://advocacy.consumerreports.org/wp-content/uploads/2020/12/CR-National-EV-Survey-December-2020-2.pdf. Accessed 3 July 2022.
+Yozwiak, Madeline, et al. “Clean and Just: Electric Vehicle Innovation to Accelerate More Equitable Early Adoption.” Information Technology and Innovation Foundation | ITIF, 28 June 2022, https://itif.org/publications/2022/06/27/electric-vehicle-innovation-to-accelerate-more-equitable-early-adoption/. Accessed 3 July 2022.
+Tolbert, Jaxon. “Beyond Cities: Breaking Through Barriers to Rural Electric Vehicle Adoption | Article | EESI.” Environmental and Energy Study Institute, 22 October 2021, https://www.eesi.org/articles/view/beyond-cities-breaking-through-barriers-to-rural-electric-vehicle-adoption. Accessed 23 July 2022.
